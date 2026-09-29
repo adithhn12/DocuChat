@@ -1,6 +1,9 @@
 import hashlib
+import json
 import os
 import sqlite3
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
@@ -146,11 +149,54 @@ def chunk_text(text):
     ).split_text(text)
 
 # ------------------------------------------------------------------------------
-# 4. Embeddings, Vector Stores & LLM
+# 4. Groq API Custom Direct Client
+# ------------------------------------------------------------------------------
+class GroqLLM:
+    def __init__(self, api_key, model_name="llama-3.3-70b-versatile", temperature=0.2):
+        self.api_key = api_key
+        self.model_name = model_name
+        self.temperature = temperature
+
+    def invoke(self, prompt):
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "DocuChat/1.0"
+        }
+        payload = {
+            "model": self.model_name,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": self.temperature
+        }
+        req = urllib.request.Request(
+            url, 
+            data=json.dumps(payload).encode("utf-8"), 
+            headers=headers, 
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                res_json = json.loads(resp.read().decode("utf-8"))
+                return res_json["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8")
+            try:
+                err_json = json.loads(err_body)
+                msg = err_json.get("error", {}).get("message", err_body)
+            except Exception:
+                msg = err_body
+            raise RuntimeError(f"Groq API Error ({e.code}): {msg}")
+        except Exception as e:
+            raise RuntimeError(f"Connection Error: {str(e)}")
+
+# ------------------------------------------------------------------------------
+# 5. Embeddings, Vector Stores & LLM
 # ------------------------------------------------------------------------------
 def is_ollama_available(host_url="http://localhost:11434"):
     try:
-        import urllib.request
         tags_url = f"{host_url.rstrip('/')}/api/tags"
         with urllib.request.urlopen(tags_url, timeout=1.5) as resp:
             return resp.status == 200
@@ -177,19 +223,9 @@ def get_llm():
             groq_key = st.secrets["GROQ_API_KEY"]
             
         if groq_key:
-            try:
-                from langchain_groq import ChatGroq
-                model_name = st.session_state.get("groq_model", "llama-3.2-3b-preview")
-                return ChatGroq(
-                    groq_api_key=groq_key,
-                    model_name=model_name,
-                    temperature=0.2
-                )
-            except Exception as e:
-                st.error(f"Groq API connection error: {str(e)}")
-                return None
+            model_name = st.session_state.get("groq_model", "llama-3.3-70b-versatile")
+            return GroqLLM(api_key=groq_key, model_name=model_name, temperature=0.2)
         else:
-            st.warning("Please enter your Groq API key in the sidebar to enable fast cloud AI generation.")
             return None
             
     # 2. Ollama Local / Custom Host Engine
@@ -199,11 +235,9 @@ def get_llm():
         if is_ollama_available(host_url):
             try:
                 return Ollama(base_url=host_url, model=model_name)
-            except Exception as e:
-                st.error(f"Error connecting to Ollama at '{host_url}': {str(e)}")
+            except Exception:
                 return None
         else:
-            st.info(f"Ollama server not detected at {host_url}. Please check if Ollama is running or switch to Groq Cloud API in the sidebar.")
             return None
 
 def get_vectorstore(text_chunks):
@@ -251,7 +285,7 @@ def format_human_prose(query, docs):
     return f"Based on your document, here is what I found:\n\n{combined}"
 
 # ------------------------------------------------------------------------------
-# 5. UI Custom Styling (CSS Injection)
+# 6. UI Custom Styling (CSS Injection)
 # ------------------------------------------------------------------------------
 def inject_custom_css():
     st.markdown("""
@@ -454,7 +488,7 @@ def inject_custom_css():
     """, unsafe_allow_html=True)
 
 # ------------------------------------------------------------------------------
-# 6. Auth Views (Login & Registration)
+# 7. Auth Views (Login & Registration)
 # ------------------------------------------------------------------------------
 def login_page():
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -518,7 +552,7 @@ def register_page():
             st.rerun()
 
 # ------------------------------------------------------------------------------
-# 7. Query Handling & Generation
+# 8. Query Handling & Generation
 # ------------------------------------------------------------------------------
 def handle_query(query):
     if not st.session_state.get("vectorstore"):
@@ -545,10 +579,13 @@ def handle_query(query):
                         else:
                             answer = str(res).strip()
                     except Exception as err:
-                        st.error(f"LLM Generation Error: {str(err)}")
-                        answer = format_human_prose(query, docs)
+                        answer = f"⚠️ **Groq AI Generation Error**: {str(err)}\n\n{format_human_prose(query, docs)}"
                 else:
-                    answer = format_human_prose(query, docs)
+                    provider = st.session_state.get("ai_provider", "Groq")
+                    if provider.startswith("Groq"):
+                        answer = f"⚠️ **Missing Groq API Key**: Please enter your Groq API Key in the sidebar settings.\n\n{format_human_prose(query, docs)}"
+                    else:
+                        answer = format_human_prose(query, docs)
                 
             st.session_state.chat_history.append((query, answer))
             st.rerun()
@@ -560,7 +597,7 @@ def handle_query(query):
                 st.error(f"Error generating response: {err_msg}")
 
 # ------------------------------------------------------------------------------
-# 8. Main Chat Application Interface
+# 9. Main Chat Application Interface
 # ------------------------------------------------------------------------------
 def chat_interface():
     with st.sidebar:
@@ -569,7 +606,7 @@ def chat_interface():
         st.session_state.ai_provider = st.sidebar.selectbox(
             "AI Provider",
             ["Groq Cloud API (Recommended for Cloud)", "Ollama (Local / Custom Host)"],
-            index=0 if "GROQ_API_KEY" in st.secrets or st.session_state.get("groq_api_key") else 1
+            index=0 if "GROQ_API_KEY" in st.secrets or st.session_state.get("groq_api_key") else 0
         )
         
         if st.session_state.ai_provider.startswith("Groq"):
@@ -581,7 +618,7 @@ def chat_interface():
             )
             st.session_state.groq_model = st.sidebar.selectbox(
                 "Groq Model Name",
-                ["llama-3.2-3b-preview", "llama-3.1-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+                ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768"],
                 index=0
             )
         else:
@@ -639,7 +676,7 @@ def chat_interface():
             st.rerun()
     
     if st.session_state.get("ai_provider", "").startswith("Groq"):
-        active_model = f"{st.session_state.get('groq_model', 'llama-3.2-3b-preview')} (Groq Cloud API)"
+        active_model = f"{st.session_state.get('groq_model', 'llama-3.3-70b-versatile')} (Groq Cloud API)"
     else:
         active_model = f"{st.session_state.get('ollama_model', 'llama3.2')} (Ollama)"
         
@@ -707,7 +744,7 @@ def chat_interface():
         handle_query(user_input)
 
 # ------------------------------------------------------------------------------
-# 9. Main Entry Point
+# 10. Main Entry Point
 # ------------------------------------------------------------------------------
 def main():
     init_session()
