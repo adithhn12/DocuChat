@@ -10,10 +10,12 @@ from pptx import Presentation
 from PyPDF2 import PdfReader
 
 import streamlit as st
+
 try:
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 except ImportError:
     from langchain.text_splitter import RecursiveCharacterTextSplitter
+
 from langchain_community.embeddings import HuggingFaceEmbeddings, OllamaEmbeddings
 from langchain_community.llms import Ollama
 from langchain_community.vectorstores import FAISS
@@ -146,52 +148,63 @@ def chunk_text(text):
 # ------------------------------------------------------------------------------
 # 4. Embeddings, Vector Stores & LLM
 # ------------------------------------------------------------------------------
-def is_ollama_available():
+def is_ollama_available(host_url="http://localhost:11434"):
     try:
         import urllib.request
-        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=1.5) as resp:
+        tags_url = f"{host_url.rstrip('/')}/api/tags"
+        with urllib.request.urlopen(tags_url, timeout=1.5) as resp:
             return resp.status == 200
     except Exception:
         return False
 
 def get_embeddings():
     embed_model = st.session_state.get("ollama_embed_model", "nomic-embed-text")
-    if is_ollama_available() and embed_model != "huggingface":
+    host_url = st.session_state.get("ollama_host", "http://localhost:11434")
+    if is_ollama_available(host_url) and embed_model != "huggingface":
         try:
-            return OllamaEmbeddings(model=embed_model)
+            return OllamaEmbeddings(base_url=host_url, model=embed_model)
         except Exception:
             pass
     return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-@st.cache_resource
-def load_local_llm():
-    from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
-    from langchain_community.llms import HuggingFacePipeline
-    model_id = "Qwen/Qwen2.5-0.5B-Instruct"
-    model = AutoModelForCausalLM.from_pretrained(model_id)
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    tokenizer.pad_token_id = tokenizer.eos_token_id
-    pipe = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        max_new_tokens=128,
-        do_sample=False,
-        pad_token_id=tokenizer.eos_token_id,
-        eos_token_id=tokenizer.eos_token_id,
-        return_full_text=False
-    )
-    return HuggingFacePipeline(pipeline=pipe)
-
 def get_llm():
-    model_name = st.session_state.get("ollama_model", "llama3.2")
-    if is_ollama_available():
-        try:
-            return Ollama(model=model_name)
-        except Exception as e:
-            st.error(f"Error connecting to Ollama model '{model_name}': {str(e)}")
-    st.info("Ollama not detected on localhost:11434. Falling back to local HF model (Qwen2.5-0.5B-Instruct).")
-    return load_local_llm()
+    provider = st.session_state.get("ai_provider", "Groq Cloud API (Recommended for Cloud)")
+    
+    # 1. Groq Cloud API Engine
+    if provider.startswith("Groq"):
+        groq_key = st.session_state.get("groq_api_key", "").strip()
+        if not groq_key and "GROQ_API_KEY" in st.secrets:
+            groq_key = st.secrets["GROQ_API_KEY"]
+            
+        if groq_key:
+            try:
+                from langchain_groq import ChatGroq
+                model_name = st.session_state.get("groq_model", "llama-3.2-3b-preview")
+                return ChatGroq(
+                    groq_api_key=groq_key,
+                    model_name=model_name,
+                    temperature=0.2
+                )
+            except Exception as e:
+                st.error(f"Groq API connection error: {str(e)}")
+                return None
+        else:
+            st.warning("Please enter your Groq API key in the sidebar to enable fast cloud AI generation.")
+            return None
+            
+    # 2. Ollama Local / Custom Host Engine
+    else:
+        host_url = st.session_state.get("ollama_host", "http://localhost:11434")
+        model_name = st.session_state.get("ollama_model", "llama3.2")
+        if is_ollama_available(host_url):
+            try:
+                return Ollama(base_url=host_url, model=model_name)
+            except Exception as e:
+                st.error(f"Error connecting to Ollama at '{host_url}': {str(e)}")
+                return None
+        else:
+            st.info(f"Ollama server not detected at {host_url}. Please check if Ollama is running or switch to Groq Cloud API in the sidebar.")
+            return None
 
 def get_vectorstore(text_chunks):
     embed_model_name = st.session_state.get("ollama_embed_model", "nomic-embed-text")
@@ -449,7 +462,7 @@ def login_page():
         st.markdown("""
         <div style="text-align: center; margin-top: 40px; margin-bottom: 24px;">
             <div class="hero-title">DocuChat AI</div>
-            <div class="hero-subtitle">Private Local Document Intelligence</div>
+            <div class="hero-subtitle">Private Local & Cloud Document Intelligence</div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -521,13 +534,18 @@ def handle_query(query):
                 context_str = "\n".join([doc.page_content.strip() for doc in docs if doc.page_content.strip()])
                 prompt = f"Answer the user query in a natural, friendly, conversational way based strictly on the context below.\n\nContext:\n{context_str}\n\nQuestion: {query}\n\nAnswer:"
 
-                if is_ollama_available():
+                llm = get_llm()
+                if llm is not None:
                     try:
-                        llm = get_llm()
                         res = llm.invoke(prompt)
-                        answer = res.strip() if isinstance(res, str) else res.content.strip()
+                        if hasattr(res, "content"):
+                            answer = res.content.strip()
+                        elif isinstance(res, str):
+                            answer = res.strip()
+                        else:
+                            answer = str(res).strip()
                     except Exception as err:
-                        st.error(f"Ollama generation error: {str(err)}")
+                        st.error(f"LLM Generation Error: {str(err)}")
                         answer = format_human_prose(query, docs)
                 else:
                     answer = format_human_prose(query, docs)
@@ -537,7 +555,7 @@ def handle_query(query):
         except Exception as e:
             err_msg = str(e) or repr(e)
             if "AssertionError" in err_msg or "dimension" in err_msg.lower():
-                st.error("Vector index dimension mismatch (embedding model changed). Please click 'Process Documents' in the sidebar to re-index your documents.")
+                st.error("Vector index dimension mismatch. Please click 'Process Documents' in the sidebar to re-index your documents.")
             else:
                 st.error(f"Error generating response: {err_msg}")
 
@@ -546,18 +564,42 @@ def handle_query(query):
 # ------------------------------------------------------------------------------
 def chat_interface():
     with st.sidebar:
-        st.title("⚙️ Ollama Settings")
+        st.title("⚙️ AI Engine Settings")
         
-        st.session_state.ollama_model = st.sidebar.text_input(
-            "Ollama Model Name",
-            value=st.session_state.get("ollama_model", "llama3.2"),
-            help="Name of pulled Ollama model (e.g. llama3.2, mistral, llama2, qwen2.5)"
+        st.session_state.ai_provider = st.sidebar.selectbox(
+            "AI Provider",
+            ["Groq Cloud API (Recommended for Cloud)", "Ollama (Local / Custom Host)"],
+            index=0 if "GROQ_API_KEY" in st.secrets or st.session_state.get("groq_api_key") else 1
         )
         
+        if st.session_state.ai_provider.startswith("Groq"):
+            st.session_state.groq_api_key = st.sidebar.text_input(
+                "Groq API Key",
+                type="password",
+                value=st.session_state.get("groq_api_key", ""),
+                help="Get your free API key at console.groq.com"
+            )
+            st.session_state.groq_model = st.sidebar.selectbox(
+                "Groq Model Name",
+                ["llama-3.2-3b-preview", "llama-3.1-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+                index=0
+            )
+        else:
+            st.session_state.ollama_host = st.sidebar.text_input(
+                "Ollama Host URL",
+                value=st.session_state.get("ollama_host", "http://localhost:11434"),
+                help="Local or remote Ollama server endpoint (e.g. http://localhost:11434 or ngrok URL)"
+            )
+            st.session_state.ollama_model = st.sidebar.text_input(
+                "Ollama Model Name",
+                value=st.session_state.get("ollama_model", "llama3.2"),
+                help="Name of pulled Ollama model (e.g. llama3.2, mistral, llama2, qwen2.5)"
+            )
+        
         st.session_state.ollama_embed_model = st.sidebar.text_input(
-            "Ollama Embedding Model",
+            "Embedding Model",
             value=st.session_state.get("ollama_embed_model", "nomic-embed-text"),
-            help="Name of pulled Ollama embedding model (e.g. nomic-embed-text, mxbai-embed-large, or enter 'huggingface' for local HF embeddings)"
+            help="Name of Ollama embedding model or enter 'huggingface' for local HF embeddings"
         )
 
         st.markdown("---")
@@ -596,15 +638,19 @@ def chat_interface():
             st.session_state.username = None
             st.rerun()
     
-    ollama_model = st.session_state.get('ollama_model', 'llama3.2')
+    if st.session_state.get("ai_provider", "").startswith("Groq"):
+        active_model = f"{st.session_state.get('groq_model', 'llama-3.2-3b-preview')} (Groq Cloud API)"
+    else:
+        active_model = f"{st.session_state.get('ollama_model', 'llama3.2')} (Ollama)"
+        
     embed_model = st.session_state.get('ollama_embed_model', 'nomic-embed-text')
     
     st.markdown(f"""
     <div style="margin-bottom: 24px;">
         <div class="hero-title">DocuChat AI</div>
-        <div class="hero-subtitle">Ask questions & gain insights from your documents locally with private AI</div>
+        <div class="hero-subtitle">Ask questions & gain insights from your documents locally or via Cloud AI</div>
         <div>
-            <span class="status-badge">⚡ Model: {ollama_model}</span>
+            <span class="status-badge">⚡ Model: {active_model}</span>
             <span class="status-badge">🧠 Embeddings: {embed_model}</span>
             <span class="status-badge">👤 User: {st.session_state.username}</span>
         </div>
@@ -652,7 +698,7 @@ def chat_interface():
                 <div class="avatar-icon bot">🤖</div>
                 <div class="chat-bubble bot">
                     <div>{answer_text}</div>
-                    <div class="chat-timestamp">{time_str} • {ollama_model}</div>
+                    <div class="chat-timestamp">{time_str} • {active_model}</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
