@@ -1,0 +1,27 @@
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Application Runtime Caches & Databases
+users.db
+vector_cache/
+embedding_cache/
+user_docs/
+
+# IDE & OS Generated Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+HOW_IT_WORKS.md
+requirements.txt
