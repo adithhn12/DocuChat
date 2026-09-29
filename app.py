@@ -10,7 +10,10 @@ from pptx import Presentation
 from PyPDF2 import PdfReader
 
 import streamlit as st
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+except ImportError:
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings, OllamaEmbeddings
 from langchain_community.llms import Ollama
 from langchain_community.vectorstores import FAISS
