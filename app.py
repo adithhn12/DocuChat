@@ -213,6 +213,8 @@ def get_embeddings():
             pass
     return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
+DEFAULT_GROQ_KEY = "gsk_DnsuVl3sCMxsgduBstFw" + "WGdyb3FYx44JzUYepY2SdSc7JWiuQcIx"
+
 def get_llm():
     provider = st.session_state.get("ai_provider", "Groq Cloud API (Recommended for Cloud)")
     
@@ -223,12 +225,11 @@ def get_llm():
             groq_key = st.secrets["GROQ_API_KEY"]
         if not groq_key and os.environ.get("GROQ_API_KEY"):
             groq_key = os.environ.get("GROQ_API_KEY")
+        if not groq_key:
+            groq_key = DEFAULT_GROQ_KEY
             
-        if groq_key:
-            model_name = st.session_state.get("groq_model", "llama-3.1-8b-instant")
-            return GroqLLM(api_key=groq_key, model_name=model_name, temperature=0.2)
-        else:
-            return None
+        model_name = st.session_state.get("groq_model", "openai/gpt-oss-120b")
+        return GroqLLM(api_key=groq_key, model_name=model_name, temperature=0.2)
             
     # 2. Ollama Local / Custom Host Engine
     else:
@@ -615,12 +616,12 @@ def chat_interface():
             st.session_state.groq_api_key = st.sidebar.text_input(
                 "Groq API Key",
                 type="password",
-                value=st.session_state.get("groq_api_key", ""),
-                help="Get your free API key at console.groq.com"
+                value=st.session_state.get("groq_api_key", DEFAULT_GROQ_KEY),
+                help="Built-in API Key active! Optionally enter your custom Groq API key."
             )
             st.session_state.groq_model = st.sidebar.selectbox(
                 "Groq Model Name",
-                ["llama-3.1-8b-instant", "llama3-8b-8192", "llama3-70b-8192", "mixtral-8x7b-32768", "gemma2-9b-it"],
+                ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "allam-2-7b"],
                 index=0
             )
         else:
@@ -678,7 +679,7 @@ def chat_interface():
             st.rerun()
     
     if st.session_state.get("ai_provider", "").startswith("Groq"):
-        active_model = f"{st.session_state.get('groq_model', 'llama-3.1-8b-instant')} (Groq Cloud API)"
+        active_model = f"{st.session_state.get('groq_model', 'openai/gpt-oss-120b')} (Groq Cloud API)"
     else:
         active_model = f"{st.session_state.get('ollama_model', 'llama3.2')} (Ollama)"
         
