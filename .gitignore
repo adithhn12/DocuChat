@@ -22,6 +22,3 @@ user_docs/
 .DS_Store
 Thumbs.db
 *.log
-
-HOW_IT_WORKS.md
-requirements.txt
